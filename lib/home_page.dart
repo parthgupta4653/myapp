@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter_sound/flutter_sound.dart';
 import 'dart:async';
 
 class HomePage extends StatefulWidget {
@@ -17,85 +22,217 @@ class HomePage extends StatefulWidget {
 class Message {
   final String text;
   final bool isUser; // true for user, false for AI
+  
 
   Message({required this.text, required this.isUser});
 }
 
 class _HomePageState extends State<HomePage> {
+  final _recorder = FlutterSoundRecorder();
   final TextEditingController _textController = TextEditingController();
-  List<String> _messages = [];
-  FlutterSoundRecorder? _recorder;
+  final _player = FlutterSoundPlayer();
+
+  String language = "english";
+  List<Message> _messages = [];
+  String? _filePath;
   bool _isRecording = false;
+  bool _isPlaying = false;
 
   void _handleSubmitted(String text) {
     _textController.clear();
+
     setState(() { // This block remains unchanged
-      _messages.insert(0, text);
+      _messages.insert(0, Message(text: text, isUser: true));
     });
     _saveMessages(); // Save messages after adding a new one
-    // TODO: Integrate AI bot response
+    _getresponseFromAI(text);
   }
 
   Future<void> _requestPermissions() async {
-    final micStatus = await Permission.microphone.request();
-    await Permission.speech.request();
-     if (micStatus != PermissionStatus.granted) {
- await Permission.storage.request();
-      throw RecordingPermissionException('Microphone permission not granted');
+    if (await Permission.microphone.isDenied) {
+      await Permission.microphone.request();
     }
+    await Permission.speech.request();
+   
+  }
+  Future<void> _getresponseFromAI(String text) async {
+
+      final prefs = await SharedPreferences.getInstance();
+      final location = prefs.getString('location') ?? '';
+      final crops = prefs.getString('crops') ?? '';
+      if (location.isEmpty || crops.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please set your location and crops first.')),
+        );
+        return;
+      }
+
+    final uri = Uri.parse('http://34.123.229.247/api/ai/chat');
+    final req = http.MultipartRequest('POST', uri)
+      ..fields['text'] = text
+      ..fields['language'] = language
+      ..fields['farmerLocation'] = location
+      ..fields['farmerCrops'] = crops
+      ..fields['chatHistory'] = jsonEncode([_messages
+          .map((msg) => {'role': msg.isUser ? 'user' : 'model','parts': [{'text': msg.text}]})
+          .toList()]);
+      
+    final streamed = await req.send();
+    final resp = await http.Response.fromStream(streamed);
+    print(resp.statusCode.toString() + resp.body);
+    if (resp.statusCode == 200) {
+      final json = jsonDecode(resp.body);
+      print(json);
+      print('AI response: ${json['answer']}');
+
+      if (json['answer'] != "") {
+        setState(() {
+          _messages.insert(0, Message(text: json['answer'], isUser: false));
+        });
+        _playMessageAudio(json['answer']);
+      } else {
+        print('AI response is empty');
+      }
+    } else {
+      print('AI response failed: ${resp.statusCode} ${resp.body}');
+    }
+    _saveMessages(); // Save messages after adding AI response
+  }
+
+  Future<void> _toggleRecording() async {
+    if (!_isRecording) {
+      // get a temporary file path
+      final dir = await getApplicationDocumentsDirectory();
+      _filePath = '${dir.path}/flutter_audio_hello.aac';
+      print('Recording to: $_filePath');
+
+      // start recording
+      if(await Permission.microphone.isGranted) {
+        await _recorder.startRecorder(
+          toFile: _filePath,
+          codec: Codec.aacADTS,
+          audioSource: AudioSource.microphone,
+          sampleRate: 16000,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Microphone permission denied')),
+        );
+        return;
+      }
+    } else {
+      // stop recording
+      Future.delayed(Duration(milliseconds: 1000), () async {
+        await _recorder.stopRecorder();
+        if (_filePath != null) {
+          await _sendAudio(_filePath!);
+        }
+      });
+
+    }
+    setState(() => _isRecording = !_isRecording);
+  }
+   Future<void> _sendAudio(String path) async {
+    print("hello");
+
+    final uri = Uri.parse('http://34.123.229.247/api/lang/transcribe');
+    final req = http.MultipartRequest('POST', uri)
+      ..fields['language'] = language
+      ..files.add(
+        await http.MultipartFile.fromPath(
+          'audio',
+          path,
+          contentType: MediaType('audio', 'mpeg'),
+        ),
+      );
+
+    final streamed = await req.send();
+    final resp = await http.Response.fromStream(streamed);
+
+    if (resp.statusCode == 200) {
+      final json = jsonDecode(resp.body);
+      print(json);
+      print('Transcription: ${json['transcript']}');
+
+      if(json['transcript'] != ""){
+        _handleSubmitted(json['transcript']);
+      }
+      
+    } else {
+      print('Upload failed: ${resp.statusCode} ${resp.body}');
+    }
+  }
+
+   Future<void> _initRecorder() async {
+    await _recorder.openRecorder();
+    await _player.openPlayer();
+    // Optional: set audio session for iOS
   }
 
   @override
   void initState() {
     super.initState();
- _requestPermissions();
     _initRecorder();
+    _requestPermissions();
     _loadMessages();
   }
 
   @override
   void dispose() {
+    _player.closePlayer();
     _textController.dispose();
+    _recorder.closeRecorder();
     super.dispose();
-    _recorder?.closeRecorder();
-    _recorder = null;
   }
 
-  Future<void> _initRecorder() async {
-     await _requestPermissions();
-    _recorder = FlutterSoundRecorder();
-    await _recorder!.openRecorder();
-  }
+  Future<void> _playMessageAudio(String message) async {
+    if (!_player.isOpen()) return;
+    print(message);
 
-  Future<void> _startRecording() async {
-     if (_recorder == null) return;
-    final directory = await getApplicationDocumentsDirectory();
-    final filePath = '${directory.path}/recording_${DateTime.now().millisecondsSinceEpoch}.aac';
-     await _recorder!.startRecorder(toFile: filePath, codec: Codec.aacMP4);
-    setState(() {
-      _isRecording = true;
-    });
-  }
-
-  Future<void> _stopRecording() async {
-    if (_recorder == null || !_isRecording) return;
-    final filePath = await _recorder!.stopRecorder();
-    setState(() {
-      _isRecording = false;
-    });
-    print('Recorded file: $filePath');
+    final uri = Uri.parse('http://34.123.229.247/api/lang/synthesize');
+    final headers = {
+    'Content-Type': 'application/json',
+  };
+  final body = jsonEncode({
+    'text': message,
+    'language': language,
+  });
+    final resp = await http.post(uri, headers: headers, body: body);
+    if (resp.statusCode != 200) {
+      print('Audio synthesis failed: ${resp.statusCode} ${resp.body}');
+      return;
+    }
+    print('Audio synthesis successful: ${resp.body}');
+    final responseData = jsonDecode(resp.body);
+    if (responseData['audioContent'] == null) {
+      print('No audio content returned');
+      return;
+    }
+    Uint8List audioBytes = base64Decode(responseData['audioContent']);
+    await _player.startPlayer(
+      fromDataBuffer: audioBytes,
+      codec: Codec.aacADTS,
+      whenFinished: () {
+        setState(() => _isPlaying = false);
+      },
+    );
   }
 
   Future<void> _loadMessages() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _messages = prefs.getStringList('chat_${widget.chatId}') ?? [];
+      final messages = prefs.getStringList('chat_${widget.chatId}') ?? [];
+      _messages = messages.map((msg) {
+        final decoded = jsonDecode(msg);
+        return Message(text: decoded['text'], isUser: decoded['isUser']);
+      }).toList();
     });
   }
 
   Future<void> _saveMessages() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('chat_${widget.chatId}', _messages);
+    await prefs.setStringList('chat_${widget.chatId}',
+        _messages.map((msg) => jsonEncode({'text': msg.text, 'isUser': msg.isUser})).toList());
   }
 
   @override
@@ -107,27 +244,31 @@ class _HomePageState extends State<HomePage> {
         backgroundColor:Color.fromARGB(255, 0, 180, 14), // Added background color
         actions: <Widget>[
           PopupMenuButton<String>(
+            icon: const Icon(Icons.translate),
+            tooltip: 'Select Language',
             onSelected: (String result) {
-              // TODO: Implement actions for each menu item
               switch (result) {
-                case 'Settings':
-                // Navigate to settings page
+                case 'English':
+                  setState(() {
+                    language = "english";
+                  });
                   break;
-                case 'Profile':
-                // Navigate to profile page
+                case 'Hindi':
+                  setState(() {
+                    language = "hindi";
+                  });
                   break;
-                case 'Logout':
-                // Perform logout
+                case 'Marathi':
+                  setState(() {
+                    language = "marathi";
+                  });
                   break;
               }
             },
             itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-              const PopupMenuItem<String>(
-                value: 'Settings',
-                child: Text('Settings'),
-              ),
-              const PopupMenuItem<String>(value: 'Profile', child: Text('Profile')),
-              const PopupMenuItem<String>(value: 'Logout', child: Text('Logout')),
+              const PopupMenuItem<String>(value: 'English', child: Text('English')),
+              const PopupMenuItem<String>(value: 'Hindi', child: Text('Hindi')),
+              const PopupMenuItem<String>(value: 'Marathi', child: Text('Marathi')),
             ],
           ),
         ],
@@ -142,7 +283,7 @@ class _HomePageState extends State<HomePage> {
               // Assuming messages are stored as String and need conversion back to Message objects
               itemBuilder: (_, int index) => _buildMessage(
                 // In a real app, you would determine if the message is from the user or bot
-                Message(text: _messages[index], isUser: index % 2 == 0), // Example: alternate for demonstration
+                _messages[index], // Example: alternate for demonstration
               ),
               itemCount: _messages.length,
             ),
@@ -164,16 +305,25 @@ class _HomePageState extends State<HomePage> {
     final messageText = messageBlock.text; // For now, assume all messages are from the user
 
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 8.0),
+      margin: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 4.0),
       child: Row(
         mainAxisAlignment:
             isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: <Widget>[
+          if (isUser)
+            IconButton(
+              icon: const Icon(Icons.play_arrow, size: 20.0),
+              onPressed: () {
+                _playMessageAudio(messageText);
+              },
+            ),
           Flexible(
             child: Container(
               padding: const EdgeInsets.all(12.0),
               decoration: BoxDecoration(
-                color: isUser ? Color.fromARGB(255,  181, 215, 167) : Colors.grey[300],
+                color: isUser
+                    ? const Color.fromARGB(255, 181, 215, 167)
+                    : Colors.grey[300],
                 borderRadius: BorderRadius.circular(8.0),
               ),
               child: Column(
@@ -188,6 +338,13 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
+          if (!isUser)
+            IconButton(
+              icon: const Icon(Icons.play_arrow, size: 20.0),
+              onPressed: () {
+                _playMessageAudio(messageText);
+              },
+            ),
         ],
       ),
     );
@@ -219,8 +376,8 @@ class _HomePageState extends State<HomePage> {
               ),
             // Placeholder for Speech-to-Text
             GestureDetector(
-              onLongPress: _startRecording,
-              onLongPressUp: _stopRecording,
+              onLongPress: _toggleRecording,
+              onLongPressUp: _toggleRecording,
               child: Icon(
                 _isRecording ? Icons.stop_circle : Icons.mic,
                 color: _isRecording ? Colors.red : null,

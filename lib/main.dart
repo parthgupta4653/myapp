@@ -7,7 +7,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
   // Decide the initial route. If user data exists, go to chats page, otherwise go to signup.
-  final initialRoute =  prefs.containsKey('user_data') ? '/' : '/signup'; 
+  final initialRoute =  prefs.containsKey('user_data') ? '/home' : '/signup'; 
 
   runApp(MyApp(initialRoute: initialRoute));
 }
@@ -40,7 +40,7 @@ class MyApp extends StatelessWidget {
       initialRoute: initialRoute,
       routes: {
         '/signup': (context) => const SignupPage(),
-        '/': (context) => const ChatsPage(), // Set ChatsPage as the default home page
+        '/home' : (context) => const ChatsPage(), // Redirect to ChatsPage
       },
     );
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:geolocator/geolocator.dart'; // Assuming geolocator is added to pubspec.yaml
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({Key? key}) : super(key: key);
@@ -31,7 +32,7 @@ class _SignupPageState extends State<SignupPage> {
 
     if (name != null && location != null && crops != null) {
       // Data exists, navigate to home page
-      Navigator.pushReplacementNamed(context, '/');
+      Navigator.pushReplacementNamed(context, '/home');
     } else {
       // Data does not exist, get location and show form
       await _getLocation();
@@ -60,20 +61,34 @@ class _SignupPageState extends State<SignupPage> {
     }
   }
 
-  Future<void> _getLocation() async {
-    try {
-      Position position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
+ Future<void> _getLocation() async {
+  try {
+    Position position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+
+    List<Placemark> placemarks = await placemarkFromCoordinates(
+      position.latitude,
+      position.longitude,
+    );
+    print(placemarks);
+
+    if (placemarks.isNotEmpty) {
+      Placemark place = placemarks.first;
       setState(() {
-        _location =
-            'Lat: ${position.latitude}, Lon: ${position.longitude}'; // You might want to reverse geocode this for a more user-friendly location
+        _location = place.locality ?? 'Unknown City';
       });
-    } catch (e) {
+    } else {
       setState(() {
-        _location = 'Could not get location: $e';
+        _location = 'City not found';
       });
     }
+  } catch (e) {
+    setState(() {
+      _location = 'Could not get location: $e';
+    });
   }
+}
 
   Future<void> _saveData() async {
     if (_formKey.currentState!.validate()) {

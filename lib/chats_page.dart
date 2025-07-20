@@ -68,6 +68,7 @@ class _ChatsPageState extends State<ChatsPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Your Chats'),
+        backgroundColor: Color.fromARGB(255, 0, 180, 14),
       ),
       body: _chatIds.isEmpty
           ? const Center(
@@ -102,6 +103,7 @@ class _ChatsPageState extends State<ChatsPage> {
         onPressed: _startNewChat,
         tooltip: 'Start New Chat',
         child: const Icon(Icons.add),
+        backgroundColor: Color.fromARGB(255, 0, 180, 14), // Changed color to match the home page
       ),
     );
   }
